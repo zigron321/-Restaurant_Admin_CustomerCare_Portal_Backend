@@ -5,10 +5,12 @@ Production-specific settings.
 - Security hardened
 - HTTPS enforced
 - Sentry error tracking
-- PostgreSQL Connection Pooling & Timeouts
+- PostgreSQL Connection Pooling & Timeouts via dj-database_url
 """
+import os
+import dj_database_url
 from .base import *  # noqa: F401, F403
-from .base import env
+from .base import env, BASE_DIR
 
 # ====================================================
 # Debug Mode — STRICTLY False
@@ -16,29 +18,24 @@ from .base import env
 DEBUG = False
 
 # ====================================================
-# Allowed Hosts
+# Allowed Hosts (Allow Railway's dynamic domains)
 # ====================================================
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=[])
+# Safely allow Railway's auto-generated domains and localhost for testing
+ALLOWED_HOSTS.append(".up.railway.app")
+ALLOWED_HOSTS.append("localhost")
 
 # ====================================================
-# Database Configuration (Production Grade)
+# Database Configuration (Railway / dj-database-url)
 # ====================================================
+# Railway injects a DATABASE_URL environment variable. We use dj_database_url
+# to automatically parse it and apply our connection pooling and SSL settings.
 DATABASES = {
-    "default": {
-        "ENGINE": env("DB_ENGINE", default="django.db.backends.postgresql"),
-        "NAME": env("DB_NAME", default="restaurant_portal"),
-        "USER": env("DB_USER", default="restaurant_user"),
-        "PASSWORD": env("DB_PASSWORD", default="secure_password_123"),
-        "HOST": env("DB_HOST", default="localhost"),
-        "PORT": env("DB_PORT", default="5432"),
-        "ATOMIC_REQUESTS": True,  # Wrap each HTTP request in a transaction
-        "CONN_MAX_AGE": env.int("DB_CONN_MAX_AGE", default=600),  # Persistent connections
-        "OPTIONS": {
-            "connect_timeout": env.int("DB_CONN_TIMEOUT", default=10),
-            "options": "-c statement_timeout=30000",  # 30 seconds timeout
-            "sslmode": "require",  # Force SSL in production
-        },
-    }
+    "default": dj_database_url.config(
+        default=env("DATABASE_URL", default="postgres://user:pass@localhost:5432/db"),
+        conn_max_age=env.int("DB_CONN_MAX_AGE", default=600),
+        ssl_require=True
+    )
 }
 
 # ====================================================
@@ -66,10 +63,13 @@ CSRF_TRUSTED_ORIGINS = env.list("CSRF_TRUSTED_ORIGINS", default=[])
 # ====================================================
 CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])
+# Add your Vercel frontend URL to your .env variables once it is deployed!
 
 # ====================================================
-# Static files compression
+# Static files compression & Root
 # ====================================================
+# Crucial for Railway: tells Django where to collect static files for production
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
 # ====================================================

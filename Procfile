@@ -1,0 +1,1 @@
+web: gunicorn restaurant_portal.wsgi:application --log-file -
