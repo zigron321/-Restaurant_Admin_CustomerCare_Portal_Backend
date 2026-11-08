@@ -2,12 +2,11 @@
 WSGI configuration for the Restaurant Portal project.
 """
 import os
-
-from django.core.wsgi import get_asgi_application
+from django.core.wsgi import get_wsgi_application
 
 os.environ.setdefault(
     "DJANGO_SETTINGS_MODULE",
-    "restaurant_portal.settings.development",
+    "restaurant_portal.settings.production"
 )
 
-application = get_asgi_application()
+application = get_wsgi_application()
