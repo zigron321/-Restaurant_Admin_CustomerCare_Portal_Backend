@@ -5,6 +5,7 @@ All environment-specific settings inherit from this module.
 """
 from pathlib import Path
 from datetime import timedelta
+import dj_database_url
 import environ
 
 # ====================================================
@@ -24,12 +25,11 @@ environ.Env.read_env(BASE_DIR / ".env")
 
 FRONTEND_URL = env("FRONTEND_URL", default="http://localhost:3000")
 
-
 # ====================================================
 # Core Settings
 # ====================================================
 SECRET_KEY = env("SECRET_KEY", default="unsafe-default-secret-key-change-me")
-DEBUG = env("DEBUG", default=False)
+DEBUG = env.bool("DEBUG", default=False)
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=["localhost", "127.0.0.1"])
 
 # ====================================================
@@ -76,7 +76,6 @@ INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
 # Middleware
 # ====================================================
 MIDDLEWARE = [
-
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "corsheaders.middleware.CorsMiddleware",
@@ -89,6 +88,7 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
+
 # ====================================================
 # URL & ASGI/WSGI Configuration
 # ====================================================
@@ -117,19 +117,16 @@ TEMPLATES = [
 
 # ====================================================
 # Database Configuration (PostgreSQL)
+# On Railway, DATABASE_URL is set from the Postgres service.
+# Locally, it falls back to a local PostgreSQL database.
 # ====================================================
 DATABASES = {
-    "default": {
-        "ENGINE": env("DB_ENGINE", default="django.db.backends.postgresql"),
-        "NAME": env("DB_NAME", default="restaurant_portal"),
-        "USER": env("DB_USER", default="postgres"),
-        "PASSWORD": env("DB_PASSWORD", default="postgres"),
-        "HOST": env("DB_HOST", default="localhost"),
-        "PORT": env("DB_PORT", default="5432"),
-        "CONN_MAX_AGE": 60,
-        "ATOMIC_REQUESTS": True,
-    }
+    "default": dj_database_url.config(
+        default="postgres://postgres:postgres@localhost:5432/restaurant_portal",
+        conn_max_age=env.int("DB_CONN_MAX_AGE", default=600),
+    )
 }
+DATABASES["default"]["ATOMIC_REQUESTS"] = True
 
 # ====================================================
 # Authentication
@@ -158,7 +155,15 @@ USE_TZ = True
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STATICFILES_DIRS = [BASE_DIR / "static"]
-STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
+
+STORAGES = {
+    "default": {
+        "BACKEND": "django.core.files.storage.FileSystemStorage",
+    },
+    "staticfiles": {
+        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+    },
+}
 
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
@@ -292,34 +297,53 @@ CORS_ALLOW_METHODS = [
 ]
 
 # ====================================================
-# Redis & Cache Configuration
+# Redis, Cache, Celery & Channels
+# Redis is optional. If REDIS_URL is not set, the app uses
+# in-memory fallbacks so it still starts. Add a Redis service
+# on Railway later and set REDIS_URL to enable it.
 # ====================================================
-REDIS_URL = env("REDIS_URL", default="redis://localhost:6379/0")
+REDIS_URL = env("REDIS_URL", default="")
 
-CACHES = {
-    "default": {
-        "BACKEND": "django.core.cache.backends.redis.RedisCache",
-        "LOCATION": REDIS_URL,
-        "TIMEOUT": 60 * 15,  # 15 minutes default cache timeout
-        "OPTIONS": {
-            "CLIENT_CLASS": "django_redis.client.DefaultClient",
-        },
+if REDIS_URL:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": REDIS_URL,
+            "TIMEOUT": 60 * 15,
+        }
     }
-}
+else:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "restaurant-portal",
+            "TIMEOUT": 60 * 15,
+        }
+    }
 
-# ====================================================
-# Celery Configuration
-# ====================================================
-CELERY_BROKER_URL = env("CELERY_BROKER_URL", default=REDIS_URL)
-CELERY_RESULT_BACKEND = env("CELERY_RESULT_BACKEND", default=REDIS_URL)
+CELERY_BROKER_URL = env("CELERY_BROKER_URL", default=REDIS_URL or "memory://")
+CELERY_RESULT_BACKEND = env("CELERY_RESULT_BACKEND", default=REDIS_URL or None)
 CELERY_ACCEPT_CONTENT = ["application/json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = TIME_ZONE
-CELERY_TASK_TIME_LIMIT = 30 * 60  # 30 minutes
-CELERY_TASK_SOFT_TIME_LIMIT = 25 * 60  # 25 minutes
-CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
+CELERY_TASK_TIME_LIMIT = 30 * 60
+CELERY_TASK_SOFT_TIME_LIMIT = 25 * 60
 CELERY_TASK_DEFAULT_QUEUE = "default"
+
+if REDIS_URL:
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            "CONFIG": {"hosts": [REDIS_URL]},
+        },
+    }
+else:
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels.layers.InMemoryChannelLayer",
+        },
+    }
 
 # ====================================================
 # Email Configuration
@@ -337,14 +361,15 @@ DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="noreply@restaurantportal
 
 # ====================================================
 # Session Configuration
+# Database-backed sessions do not depend on Redis.
 # ====================================================
-SESSION_ENGINE = "django.contrib.sessions.backends.cached_db"
+SESSION_ENGINE = "django.contrib.sessions.backends.db"
 SESSION_COOKIE_AGE = 60 * 60 * 24 * 7  # 1 week
-SESSION_COOKIE_SECURE = False  # Set to True in production
+SESSION_COOKIE_SECURE = False  # Overridden to True in production.py
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = "Lax"
 
-CSRF_COOKIE_SECURE = False  # Set to True in production
+CSRF_COOKIE_SECURE = False  # Overridden to True in production.py
 CSRF_COOKIE_HTTPONLY = True
 CSRF_COOKIE_SAMESITE = "Lax"
 
@@ -388,7 +413,7 @@ LOGGING = {
             "level": "DEBUG",
             "class": "logging.handlers.RotatingFileHandler",
             "filename": LOGS_DIR / "django.log",
-            "maxBytes": 1024 * 1024 * 10,  # 10 MB
+            "maxBytes": 1024 * 1024 * 10,
             "backupCount": 5,
             "formatter": "verbose",
         },
@@ -435,26 +460,14 @@ LOGGING = {
 }
 
 # ====================================================
-# Channels / WebSocket Configuration
-# ====================================================
-ASGI_APPLICATION = "restaurant_portal.asgi.application"
-CHANNEL_LAYERS = {
-    "default": {
-        "BACKEND": "channels_redis.core.RedisChannelLayer",
-        "CONFIG": {
-            "hosts": [REDIS_URL],
-        },
-    },
-}
-
-# ====================================================
 # Application-specific settings
 # ====================================================
 APP_NAME = env("APP_NAME", default="Restaurant Portal")
 APP_VERSION = env("APP_VERSION", default="1.0.0")
 APP_ENVIRONMENT = env("APP_ENVIRONMENT", default="development")
 
-
+# ====================================================
 # Stripe Configuration
-STRIPE_SECRET_KEY = env("STRIPE_SECRET_KEY", default="") # Leave blank to use Mock Mode for testing
+# ====================================================
+STRIPE_SECRET_KEY = env("STRIPE_SECRET_KEY", default="")  # Blank = Mock Mode
 STRIPE_PUBLISHABLE_KEY = env("STRIPE_PUBLISHABLE_KEY", default="")
