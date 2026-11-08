@@ -1,1 +1,1 @@
-web: gunicorn restaurant_portal.wsgi:application --log-file -
+   web: python manage.py migrate --noinput && python manage.py collectstatic --noinput && gunicorn restaurant_portal.wsgi:application --bind 0.0.0.0:$PORT --log-file -
