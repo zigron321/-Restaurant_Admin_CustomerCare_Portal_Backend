@@ -54,6 +54,8 @@ THIRD_PARTY_APPS = [
     "django_filters",
     "django_extensions",
     "djoser",
+    "cloudinary", # Add this
+    "cloudinary_storage", # Add this
 ]
 
 LOCAL_APPS = [
@@ -158,7 +160,8 @@ STATICFILES_DIRS = [BASE_DIR / "static"]
 
 STORAGES = {
     "default": {
-        "BACKEND": "django.core.files.storage.FileSystemStorage",
+#        "BACKEND": "django.core.files.storage.FileSystemStorage",
+         "BACKEND": "cloudinary_storage.storage.MediaCloudinaryStorage", # Use Cloudinary for media
     },
     "staticfiles": {
         "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
