@@ -101,22 +101,3 @@ REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"] = {
 }
 
 
-# ====================================================
-# AWS S3 Media Storage Configuration (Django 4.2+)
-# ====================================================
-AWS_ACCESS_KEY_ID = env('AWS_ACCESS_KEY_ID')
-AWS_SECRET_ACCESS_KEY = env('AWS_SECRET_ACCESS_KEY')
-AWS_STORAGE_BUCKET_NAME = 'restaurant-portal-media-bucket' # REPLACE WITH YOUR BUCKET NAME
-AWS_S3_REGION_NAME = 'ap-southeast-2' # REPLACE WITH YOUR REGION
-AWS_S3_FILE_OVERWRITE = False
-AWS_QUERYSTRING_AUTH = False # Generates clean public URLs instead of signed URLs
-
-# Override the STORAGES dictionary from base.py to use S3 for media files
-STORAGES = {
-    "default": {
-        "BACKEND": "storages.backends.s3.S3Storage",
-    },
-    "staticfiles": {
-        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
-    },
-}
