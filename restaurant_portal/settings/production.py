@@ -68,8 +68,10 @@ CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])
 # ====================================================
 # Email Configuration
 # ====================================================
-EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
-
+#EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+EMAIL_BACKEND = "apps.common.brevo_backend.BrevoAPIEmailBackend"
+DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL")
+BREVO_API_KEY = env("BREVO_API_KEY", default="")
 # ====================================================
 # Logging - more conservative in production
 # ====================================================
