@@ -29,6 +29,16 @@ from datetime import timedelta
 from apps.restaurants import reservation_services
 
 
+# Team role -> account role. Only DELIVERY_STAFF opens the driver screen; every other team
+# role (kitchen, manager, cashier, ...) uses the restaurant-staff account type.
+STAFF_SWITCHABLE_ROLES = ('CUSTOMER', 'RESTAURANT_STAFF', 'DELIVERY_STAFF')
+
+
+def login_role_for(team_role):
+    return 'DELIVERY_STAFF' if team_role == 'DELIVERY_STAFF' else 'RESTAURANT_STAFF'
+
+
+
 
 
 class RestaurantViewSet(viewsets.ModelViewSet):
@@ -178,20 +188,25 @@ class StaffMemberViewSet(viewsets.ModelViewSet):
         if not staff_email:
             raise ValidationError({"staff_email": "This field is required."})
             
+        # The role chosen on the team form (KITCHEN_STAFF, DELIVERY_STAFF, ...) decides which
+        # screen this person lands on after login, so the account role must match it.
+        login_role = login_role_for(serializer.validated_data.get('role'))
+
         # Look for existing user, or create a new one if they don't exist
         user, created = User.objects.get_or_create(
             email=staff_email,
             defaults={
-                'role': 'RESTAURANT_STAFF',
+                'role': login_role,
                 'is_active': True
             }
         )
-        
-        # If the user was already a customer, upgrade their role to staff
-        if not created and user.role not in ['RESTAURANT_STAFF', 'DELIVERY_STAFF', 'RESTAURANT_OWNER', 'SUPER_ADMIN']:
-            user.role = 'RESTAURANT_STAFF'
-            user.save()
-            
+
+        # Existing customers/staff accounts get the role that matches the team role.
+        # Owners and super admins are never changed.
+        if not created and user.role in STAFF_SWITCHABLE_ROLES and user.role != login_role:
+            user.role = login_role
+            user.save(update_fields=['role'])
+
         # Prevent duplicate staff entries
         if RestaurantStaffMember.objects.filter(restaurant=restaurant, user=user).exists():
             raise ValidationError("This user is already a staff member at your restaurant.")
@@ -201,6 +216,15 @@ class StaffMemberViewSet(viewsets.ModelViewSet):
         validated_data.pop('staff_email', None)
             
         serializer.save(restaurant=restaurant, user=user)
+
+    def perform_update(self, serializer):
+        member = serializer.save()
+        # Keep the account role in step when the owner changes someone's team role.
+        user = member.user
+        login_role = login_role_for(member.role)
+        if user.role in STAFF_SWITCHABLE_ROLES and user.role != login_role:
+            user.role = login_role
+            user.save(update_fields=['role'])
 
     @action(detail=True, methods=['post'], url_path='toggle-active')
     def toggle_active(self, request, pk=None):
