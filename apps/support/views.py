@@ -5,6 +5,7 @@ from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
 
 from apps.support.models import SupportTicket, SupportTicketMessage
+from apps.common.active_restaurant import scope_queryset
 from apps.support.serializers import SupportTicketSerializer, SupportTicketMessageSerializer
 
 class SupportTicketViewSet(viewsets.ModelViewSet):
@@ -19,9 +20,9 @@ class SupportTicketViewSet(viewsets.ModelViewSet):
             return SupportTicket.objects.filter(customer=user).prefetch_related('messages').order_by('-created_at')
         elif user.role == 'RESTAURANT_OWNER':
             # Owners see tickets related to their restaurant
-            return SupportTicket.objects.filter(restaurant__owner=user).prefetch_related('messages').order_by('-created_at')
+            return scope_queryset(SupportTicket.objects.filter(restaurant__owner=user), self.request).prefetch_related('messages').order_by('-created_at')
         elif user.role == 'SUPER_ADMIN':
-            return SupportTicket.objects.all().prefetch_related('messages').order_by('-created_at')
+            return scope_queryset(SupportTicket.objects.all(), self.request).prefetch_related('messages').order_by('-created_at')
         return SupportTicket.objects.none()
 
     def perform_create(self, serializer):

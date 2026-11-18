@@ -10,6 +10,7 @@ import csv
 from django.http import HttpResponse
 
 from apps.common.permissions import IsRestaurantOwner
+from apps.common.active_restaurant import active_restaurant
 from apps.restaurants.models import Restaurant
 from apps.orders.models import Order
 from apps.menu.models import MenuItem
@@ -24,11 +25,8 @@ class DashboardViewSet(viewsets.ViewSet):
     permission_classes = [IsAuthenticated, IsRestaurantOwner]
 
     def get_restaurant(self, request):
-        """Helper method to get the owner's restaurant"""
-        try:
-            return Restaurant.objects.get(owner=request.user)
-        except Restaurant.DoesNotExist:
-            return None
+        """The restaurant the owner is working on (switcher), or their oldest one. None if they have no restaurant."""
+        return active_restaurant(request, required=False)
 
     def list(self, request):
         """GET /api/v1/analytics/dashboard/ - Main overview stats"""

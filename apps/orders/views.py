@@ -15,6 +15,7 @@ from apps.orders.serializers import (
 from apps.menu.models import MenuItem, MenuItemCustomizationOption, MenuItemAddOn
 from apps.restaurants.models import Restaurant, RestaurantStaffMember
 from apps.users.models import SavedAddress
+from apps.common.active_restaurant import my_restaurants, scope_queryset
 from decimal import Decimal
 from django.utils import timezone
 
@@ -26,7 +27,7 @@ class OrderViewSet(viewsets.ModelViewSet):
     """ViewSet for viewing and managing placed orders"""
     serializer_class = OrderSerializer
     filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['status', 'order_type', 'payment_status']
+    filterset_fields = ['status', 'order_type', 'payment_status', 'restaurant']
 
     def get_permissions(self):
         if self.action == 'create':
@@ -43,14 +44,15 @@ class OrderViewSet(viewsets.ModelViewSet):
             # Customers only see their own orders, excluding active carts
             return Order.objects.filter(customer=user).exclude(status='CART').select_related('restaurant').prefetch_related('items')
         elif user.role == 'RESTAURANT_OWNER':
-            return Order.objects.filter(restaurant__owner=user).exclude(status='CART').select_related('restaurant').prefetch_related('items')
+            # The restaurant picked in the switcher (all of the owner's restaurants if none is picked).
+            qs = scope_queryset(Order.objects.filter(restaurant__owner=user), self.request)
+            return qs.exclude(status='CART').select_related('restaurant').prefetch_related('items')
         elif user.role == 'RESTAURANT_STAFF':
-            staff_member = RestaurantStaffMember.objects.filter(user=user).first()
-            if staff_member:
-                return Order.objects.filter(restaurant=staff_member.restaurant).exclude(status='CART').select_related('restaurant').prefetch_related('items')
-            return Order.objects.none()
+            qs = scope_queryset(Order.objects.filter(restaurant__in=my_restaurants(user)), self.request)
+            return qs.exclude(status='CART').select_related('restaurant').prefetch_related('items')
         elif user.role == 'SUPER_ADMIN':
-            return Order.objects.exclude(status='CART').select_related('restaurant').prefetch_related('items')
+            qs = scope_queryset(Order.objects.all(), self.request)
+            return qs.exclude(status='CART').select_related('restaurant').prefetch_related('items')
         return Order.objects.none()
 
     @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated])
@@ -306,9 +308,9 @@ class CouponViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         if user.role == 'RESTAURANT_OWNER':
-            return Coupon.objects.filter(restaurant__owner=user).prefetch_related('redemptions')
+            return scope_queryset(Coupon.objects.filter(restaurant__owner=user), self.request).prefetch_related('redemptions')
         elif user.role == 'SUPER_ADMIN':
-            return Coupon.objects.all().prefetch_related('redemptions')
+            return scope_queryset(Coupon.objects.all(), self.request).prefetch_related('redemptions')
         return Coupon.objects.none()
 
     def perform_create(self, serializer):

@@ -12,6 +12,7 @@ from apps.orders.models import Order
 from apps.support.models import SupportTicket
 from apps.common.serializers import AdminUserSerializer, AdminRestaurantSerializer, AdminOrderSerializer
 from django.http import JsonResponse
+from apps.common.active_restaurant import requested_id, active_restaurant
 
 def health_check(request):
     """Simple health check endpoint."""
@@ -32,11 +33,21 @@ class SuperAdminViewSet(viewsets.ViewSet):
     @action(detail=False, methods=['get'], url_path='dashboard')
     def dashboard(self, request):
         """GET /api/v1/admin/dashboard/ - Platform overview stats"""
-        total_revenue = Order.objects.filter(status='DELIVERED').aggregate(total=Sum('total_amount'))['total'] or 0
-        total_orders = Order.objects.exclude(status='CART').count()
-        active_restaurants = Restaurant.objects.filter(is_active=True).count()
+        orders = Order.objects.all()
+        tickets = SupportTicket.objects.all()
+        restaurants = Restaurant.objects.filter(is_active=True)
+        # With a restaurant picked in the switcher, show only that restaurant's numbers.
+        if requested_id(request):
+            picked = active_restaurant(request)
+            orders = orders.filter(restaurant=picked)
+            tickets = tickets.filter(restaurant=picked)
+            restaurants = restaurants.filter(pk=picked.pk)
+
+        total_revenue = orders.filter(status='DELIVERED').aggregate(total=Sum('total_amount'))['total'] or 0
+        total_orders = orders.exclude(status='CART').count()
+        active_restaurants = restaurants.count()
         total_customers = User.objects.filter(role='CUSTOMER').count()
-        open_tickets = SupportTicket.objects.filter(status__in=['OPEN', 'IN_PROGRESS']).count()
+        open_tickets = tickets.filter(status__in=['OPEN', 'IN_PROGRESS']).count()
 
         data = {
             "total_revenue": str(total_revenue),
@@ -80,6 +91,9 @@ class SuperAdminViewSet(viewsets.ViewSet):
     @action(detail=False, methods=['get'], url_path='orders')
     def list_orders(self, request):
         """GET /api/v1/admin/orders/ - List all platform orders"""
-        orders = Order.objects.exclude(status='CART').order_by('-placed_at')[:50] # Last 50 orders
+        orders = Order.objects.exclude(status='CART')
+        if requested_id(request):
+            orders = orders.filter(restaurant=active_restaurant(request))
+        orders = orders.order_by('-placed_at')[:50]  # Last 50 orders
         serializer = AdminOrderSerializer(orders, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)

@@ -10,6 +10,7 @@ from rest_framework.response import Response
 
 from apps.orders.models import Order
 from apps.restaurants.models import Restaurant
+from apps.common.active_restaurant import scope_queryset
 from .models import Review
 from .serializers import EligibleOrderSerializer, ReplySerializer, ReviewSerializer
 
@@ -67,9 +68,9 @@ class ReviewViewSet(viewsets.ModelViewSet):
         if role == CUSTOMER:
             qs = qs.filter(customer=user)
         elif role == OWNER:
-            qs = qs.filter(restaurant__owner=user)
+            qs = scope_queryset(qs.filter(restaurant__owner=user), self.request)
         elif role == ADMIN:
-            pass
+            qs = scope_queryset(qs, self.request)
         elif self.action == 'retrieve':
             qs = qs.filter(is_visible=True)  # signed out: a single public review by id
         else:

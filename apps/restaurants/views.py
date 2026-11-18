@@ -27,6 +27,7 @@ from django.db import transaction
 from datetime import timedelta
 
 from apps.restaurants import reservation_services
+from apps.common.active_restaurant import active_restaurant, my_restaurants, scope_queryset
 
 
 # Team role -> account role. Only DELIVERY_STAFF opens the driver screen; every other team
@@ -87,6 +88,41 @@ class RestaurantViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(owner=self.request.user)
 
+    @action(detail=False, methods=['get'], url_path='mine', permission_classes=[IsAuthenticated])
+    def mine(self, request):
+        """
+        GET /api/v1/restaurants/mine/
+        The restaurants this signed-in owner / kitchen or delivery team member / super admin can work on.
+        The website uses it for the restaurant switcher.
+        """
+        user = request.user
+        rows = my_restaurants(user).order_by('created_at')
+        team_roles = {}
+        if user.role in ('RESTAURANT_STAFF', 'DELIVERY_STAFF'):
+            team_roles = {
+                str(m.restaurant_id): m.role
+                for m in RestaurantStaffMember.objects.filter(user=user, is_active=True)
+            }
+        data = []
+        for r in rows:
+            logo = None
+            if r.logo:
+                try:
+                    logo = request.build_absolute_uri(r.logo.url)
+                except Exception:
+                    logo = None
+            data.append({
+                'id': str(r.id),
+                'name': r.name,
+                'slug': r.slug,
+                'logo': logo,
+                'city': r.city,
+                'is_active': r.is_active,
+                'is_open': r.is_open,
+                'my_role': team_roles.get(str(r.id)),
+            })
+        return Response(data)
+
     @action(detail=True, methods=['get'], permission_classes=[IsAuthenticatedOrReadOnly])
     def menu(self, request, pk=None):
         """Get restaurant menu (categories and their active items)"""
@@ -135,12 +171,12 @@ class RestaurantSettingsView(APIView):
     permission_classes = [IsAuthenticated, IsRestaurantOwner]
 
     def get(self, request):
-        restaurant = get_object_or_404(Restaurant, owner=request.user)
+        restaurant = active_restaurant(request)
         serializer = RestaurantSettingsSerializer(restaurant)
         return Response(serializer.data)
 
     def patch(self, request):
-        restaurant = get_object_or_404(Restaurant, owner=request.user)
+        restaurant = active_restaurant(request)
         serializer = RestaurantSettingsSerializer(restaurant, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
@@ -153,10 +189,10 @@ class RestaurantHolidayViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, IsRestaurantOwner]
 
     def get_queryset(self):
-        return RestaurantHoliday.objects.filter(restaurant__owner=self.request.user)
+        return scope_queryset(RestaurantHoliday.objects.filter(restaurant__owner=self.request.user), self.request)
 
     def perform_create(self, serializer):
-        restaurant = get_object_or_404(Restaurant, owner=self.request.user)
+        restaurant = active_restaurant(self.request)
         serializer.save(restaurant=restaurant)
 
 class RestaurantDeliveryZoneViewSet(viewsets.ModelViewSet):
@@ -165,10 +201,10 @@ class RestaurantDeliveryZoneViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, IsRestaurantOwner]
 
     def get_queryset(self):
-        return RestaurantDeliveryZone.objects.filter(restaurant__owner=self.request.user)
+        return scope_queryset(RestaurantDeliveryZone.objects.filter(restaurant__owner=self.request.user), self.request)
 
     def perform_create(self, serializer):
-        restaurant = get_object_or_404(Restaurant, owner=self.request.user)
+        restaurant = active_restaurant(self.request)
         serializer.save(restaurant=restaurant)
 
 
@@ -179,10 +215,10 @@ class StaffMemberViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, IsRestaurantOwner]
 
     def get_queryset(self):
-        return RestaurantStaffMember.objects.filter(restaurant__owner=self.request.user)
+        return scope_queryset(RestaurantStaffMember.objects.filter(restaurant__owner=self.request.user), self.request)
 
     def perform_create(self, serializer):
-        restaurant = get_object_or_404(Restaurant, owner=self.request.user)
+        restaurant = active_restaurant(self.request)
         staff_email = self.request.data.get('staff_email')
         
         if not staff_email:
@@ -191,6 +227,16 @@ class StaffMemberViewSet(viewsets.ModelViewSet):
         # The role chosen on the team form (KITCHEN_STAFF, DELIVERY_STAFF, ...) decides which
         # screen this person lands on after login, so the account role must match it.
         login_role = login_role_for(serializer.validated_data.get('role'))
+
+        # One account has one kind of job: it can be kitchen at several restaurants, but not kitchen at one and driver at another.
+        existing = User.objects.filter(email=staff_email).first()
+        if existing is not None:
+            kinds = {login_role_for(m.role) for m in RestaurantStaffMember.objects.filter(user=existing)}
+            if kinds and login_role not in kinds:
+                raise ValidationError({
+                    'role': 'This person already works for your team in a different kind of role (kitchen vs delivery). '
+                            'Use another email address for this role.'
+                })
 
         # Look for existing user, or create a new one if they don't exist
         user, created = User.objects.get_or_create(
@@ -218,6 +264,17 @@ class StaffMemberViewSet(viewsets.ModelViewSet):
         serializer.save(restaurant=restaurant, user=user)
 
     def perform_update(self, serializer):
+        new_role = serializer.validated_data.get('role')
+        if new_role:
+            kinds = {
+                login_role_for(m.role)
+                for m in RestaurantStaffMember.objects.filter(user=serializer.instance.user).exclude(pk=serializer.instance.pk)
+            }
+            if kinds and login_role_for(new_role) not in kinds:
+                raise ValidationError({
+                    'role': 'This person also works at another of your restaurants in a different kind of role. '
+                            'Change that one first, or use another email address.'
+                })
         member = serializer.save()
         # Keep the account role in step when the owner changes someone's team role.
         user = member.user
@@ -256,11 +313,11 @@ class RestaurantTableViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, IsRestaurantOwner]
 
     def get_queryset(self):
-        return RestaurantTable.objects.filter(restaurant__owner=self.request.user).order_by('table_number')
+        return scope_queryset(RestaurantTable.objects.filter(restaurant__owner=self.request.user), self.request).order_by('table_number')
 
     def _my_restaurant(self):
-        # An owner with several restaurants gets the oldest one instead of an error.
-        restaurant = Restaurant.objects.filter(owner=self.request.user).order_by('created_at').first()
+        # The restaurant the owner is working on (switcher), or the oldest one.
+        restaurant = active_restaurant(self.request, required=False)
         if restaurant is None:
             raise ValidationError({'detail': 'Create your restaurant before adding tables.'})
         return restaurant
@@ -298,9 +355,9 @@ class ReservationViewSet(viewsets.ModelViewSet):
         if user.role == 'CUSTOMER':
             qs = Reservation.objects.filter(customer=user)
         elif user.role == 'RESTAURANT_OWNER':
-            qs = Reservation.objects.filter(restaurant__owner=user)
+            qs = scope_queryset(Reservation.objects.filter(restaurant__owner=user), self.request)
         elif user.role == 'SUPER_ADMIN':
-            qs = Reservation.objects.all()
+            qs = scope_queryset(Reservation.objects.all(), self.request)
         else:
             return Reservation.objects.none()
         qs = qs.select_related('restaurant', 'table', 'customer')
