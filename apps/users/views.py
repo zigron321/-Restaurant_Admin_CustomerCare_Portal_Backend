@@ -40,6 +40,7 @@ from apps.common.permissions import IsCustomerUser, IsRestaurantOwner
 from django.shortcuts import get_object_or_404
 from rest_framework.exceptions import ValidationError
 from apps.restaurants.models import Restaurant
+from apps.common.active_restaurant import managed_restaurants
 
 
 
@@ -305,13 +306,13 @@ class CampaignViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, IsRestaurantOwner]
 
     def get_queryset(self):
-        return Campaign.objects.filter(restaurant__owner=self.request.user)
+        return Campaign.objects.filter(restaurant__in=managed_restaurants(self.request.user))
 
     def perform_create(self, serializer):
         restaurant_id = self.request.data.get('restaurant_id')
         if not restaurant_id:
             raise ValidationError({"restaurant_id": "This field is required."})
-        restaurant = get_object_or_404(Restaurant, id=restaurant_id, owner=self.request.user)
+        restaurant = get_object_or_404(managed_restaurants(self.request.user), id=restaurant_id)
         serializer.save(restaurant=restaurant)
 
     @action(detail=True, methods=['post'], url_path='send')

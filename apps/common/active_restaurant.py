@@ -1,9 +1,9 @@
 """
 "Which restaurant is this person working on right now?"
 
-An owner can run several restaurants, and a kitchen / delivery team member can work at several too.
+An owner can run several restaurants, and a manager / kitchen / delivery team member can work at several too.
 The website tells the server which one it is looking at by adding `?active_restaurant=<id>` to its requests
-(the `X-Restaurant-Id` header works as well). Every owner / staff / admin screen then shows only that restaurant.
+(the `X-Restaurant-Id` header works as well). Every owner / manager / staff / admin screen then shows only that restaurant.
 
 * Nothing sent  -> old behaviour (lists show everything the person may see, single-item screens use the oldest restaurant).
 * An id that the person has no access to -> 404, so nobody can peek into someone else's restaurant.
@@ -14,6 +14,9 @@ from django.http import Http404
 PARAM = 'active_restaurant'
 HEADER_META = 'HTTP_X_RESTAURANT_ID'
 
+# Account types that run a restaurant (the owner, and the manager the owner appointed).
+OWNER_SIDE_ROLES = ('RESTAURANT_OWNER', 'RESTAURANT_MANAGER')
+
 
 def my_restaurants(user):
     """Every restaurant this user is allowed to work on."""
@@ -22,11 +25,35 @@ def my_restaurants(user):
     role = getattr(user, 'role', None)
     if role == 'RESTAURANT_OWNER':
         return Restaurant.objects.filter(owner=user)
-    if role in ('RESTAURANT_STAFF', 'DELIVERY_STAFF'):
+    if role in ('RESTAURANT_MANAGER', 'RESTAURANT_STAFF', 'DELIVERY_STAFF'):
         return Restaurant.objects.filter(staff_members__user=user, staff_members__is_active=True).distinct()
     if role == 'SUPER_ADMIN':
         return Restaurant.objects.all()
     return Restaurant.objects.none()
+
+
+def managed_restaurants(user):
+    """
+    The restaurants this user RUNS: an owner's own restaurants, or the restaurants where the owner made this person the Manager.
+    Use this (instead of `owner=user`) wherever an owner screen is also open to managers.
+    """
+    from apps.restaurants.models import Restaurant
+
+    role = getattr(user, 'role', None)
+    if role == 'RESTAURANT_OWNER':
+        return Restaurant.objects.filter(owner=user)
+    if role == 'RESTAURANT_MANAGER':
+        return Restaurant.objects.filter(
+            staff_members__user=user, staff_members__is_active=True, staff_members__role='MANAGER'
+        ).distinct()
+    return Restaurant.objects.none()
+
+
+def manages(user, restaurant_id):
+    """True when `user` runs the restaurant with this id (as its owner or its manager)."""
+    if not restaurant_id:
+        return False
+    return managed_restaurants(user).filter(pk=restaurant_id).exists()
 
 
 def requested_id(request):

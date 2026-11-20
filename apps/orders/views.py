@@ -15,7 +15,7 @@ from apps.orders.serializers import (
 from apps.menu.models import MenuItem, MenuItemCustomizationOption, MenuItemAddOn
 from apps.restaurants.models import Restaurant, RestaurantStaffMember
 from apps.users.models import SavedAddress
-from apps.common.active_restaurant import my_restaurants, scope_queryset
+from apps.common.active_restaurant import managed_restaurants, my_restaurants, scope_queryset
 from decimal import Decimal
 from django.utils import timezone
 
@@ -43,9 +43,9 @@ class OrderViewSet(viewsets.ModelViewSet):
         if user.role == 'CUSTOMER':
             # Customers only see their own orders, excluding active carts
             return Order.objects.filter(customer=user).exclude(status='CART').select_related('restaurant').prefetch_related('items')
-        elif user.role == 'RESTAURANT_OWNER':
-            # The restaurant picked in the switcher (all of the owner's restaurants if none is picked).
-            qs = scope_queryset(Order.objects.filter(restaurant__owner=user), self.request)
+        elif user.role in ('RESTAURANT_OWNER', 'RESTAURANT_MANAGER'):
+            # The restaurant picked in the switcher (all of the owner's / manager's restaurants if none is picked).
+            qs = scope_queryset(Order.objects.filter(restaurant__in=managed_restaurants(user)), self.request)
             return qs.exclude(status='CART').select_related('restaurant').prefetch_related('items')
         elif user.role == 'RESTAURANT_STAFF':
             qs = scope_queryset(Order.objects.filter(restaurant__in=my_restaurants(user)), self.request)
@@ -307,8 +307,8 @@ class CouponViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        if user.role == 'RESTAURANT_OWNER':
-            return scope_queryset(Coupon.objects.filter(restaurant__owner=user), self.request).prefetch_related('redemptions')
+        if user.role in ('RESTAURANT_OWNER', 'RESTAURANT_MANAGER'):
+            return scope_queryset(Coupon.objects.filter(restaurant__in=managed_restaurants(user)), self.request).prefetch_related('redemptions')
         elif user.role == 'SUPER_ADMIN':
             return scope_queryset(Coupon.objects.all(), self.request).prefetch_related('redemptions')
         return Coupon.objects.none()
@@ -319,7 +319,7 @@ class CouponViewSet(viewsets.ModelViewSet):
             raise ValidationError({"restaurant_id": "This field is required."})
             
         try:
-            restaurant = Restaurant.objects.get(id=restaurant_id, owner=self.request.user)
+            restaurant = managed_restaurants(self.request.user).get(id=restaurant_id)
         except Restaurant.DoesNotExist:
             raise ValidationError("Invalid restaurant or you do not own this restaurant.")
             

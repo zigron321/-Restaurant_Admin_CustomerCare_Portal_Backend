@@ -10,7 +10,7 @@ from rest_framework.response import Response
 
 from apps.orders.models import Order
 from apps.restaurants.models import Restaurant
-from apps.common.active_restaurant import scope_queryset
+from apps.common.active_restaurant import OWNER_SIDE_ROLES, managed_restaurants, manages, scope_queryset
 from .models import Review
 from .serializers import EligibleOrderSerializer, ReplySerializer, ReviewSerializer
 
@@ -61,14 +61,14 @@ class ReviewViewSet(viewsets.ModelViewSet):
 
         # Anyone can read one restaurant's visible reviews, unless they run that restaurant (or the platform).
         if reading and restaurant_id:
-            manages = role == ADMIN or (role == OWNER and Restaurant.objects.filter(pk=restaurant_id, owner=user).exists())
-            if not manages:
+            runs_it = role == ADMIN or (role in OWNER_SIDE_ROLES and manages(user, restaurant_id))
+            if not runs_it:
                 return qs.filter(restaurant_id=restaurant_id, is_visible=True)
 
         if role == CUSTOMER:
             qs = qs.filter(customer=user)
-        elif role == OWNER:
-            qs = scope_queryset(qs.filter(restaurant__owner=user), self.request)
+        elif role in OWNER_SIDE_ROLES:
+            qs = scope_queryset(qs.filter(restaurant__in=managed_restaurants(user)), self.request)
         elif role == ADMIN:
             qs = scope_queryset(qs, self.request)
         elif self.action == 'retrieve':
@@ -135,7 +135,7 @@ class ReviewViewSet(viewsets.ModelViewSet):
     def summary(self, request):
         """GET /reviews/summary/?restaurant=<id> - average, count, 1-5 star breakdown and reply counts."""
         role = getattr(request.user, 'role', None) if request.user.is_authenticated else None
-        if not request.query_params.get('restaurant') and role not in (OWNER, ADMIN):
+        if not request.query_params.get('restaurant') and role not in (*OWNER_SIDE_ROLES, ADMIN):
             raise ValidationError({'restaurant': 'restaurant is required.'})
         base = self._scope()
         stats = base.aggregate(avg=Avg('rating'), n=Count('id'))
@@ -156,8 +156,8 @@ class ReviewViewSet(viewsets.ModelViewSet):
     def reply(self, request, pk=None):
         """POST /reviews/{id}/reply/  {"reply": "Thank you!"}  (an empty reply removes it)"""
         review = self.get_object()
-        if request.user.role != ADMIN and review.restaurant.owner_id != request.user.id:
-            raise PermissionDenied('Only the restaurant owner can reply.')
+        if request.user.role != ADMIN and not manages(request.user, review.restaurant_id):
+            raise PermissionDenied('Only the restaurant owner or manager can reply.')
         data = ReplySerializer(data=request.data)
         data.is_valid(raise_exception=True)
         text = data.validated_data['reply'].strip()

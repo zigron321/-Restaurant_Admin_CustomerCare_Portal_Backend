@@ -3,11 +3,9 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.db.models import Q
-from django.http import Http404
-from django.shortcuts import get_object_or_404
 
 from apps.orders.models import Order
-from apps.restaurants.models import Restaurant, RestaurantStaffMember
+from apps.common.active_restaurant import active_restaurant
 from apps.kitchen.serializers import KitchenOrderSerializer
 from apps.common.permissions import IsRestaurantStaffOrOwner
 
@@ -17,17 +15,9 @@ class KitchenOrderViewSet(viewsets.GenericViewSet):
     permission_classes = [IsAuthenticated, IsRestaurantStaffOrOwner]
 
     def get_queryset(self):
-        user = self.request.user
-        
-        # Find the restaurant the staff member belongs to
-        if user.role == 'RESTAURANT_OWNER':
-            # An owner may have more than one restaurant; show the first (oldest) one.
-            restaurant = Restaurant.objects.filter(owner=user).order_by('created_at').first()
-            if restaurant is None:
-                raise Http404('No restaurant is linked to this account.')
-        else: # RESTAURANT_STAFF
-            staff_member = get_object_or_404(RestaurantStaffMember, user=user)
-            restaurant = staff_member.restaurant
+        # The restaurant being worked on: the one picked in the restaurant switcher, or the person's oldest one.
+        # Owners see their own restaurants; managers and kitchen staff only the restaurants they were added to.
+        restaurant = active_restaurant(self.request)
 
         # The kitchen works these: paid orders waiting to be accepted (PLACED), accepted ones (CONFIRMED),
         # on the stove (PREPARING) and finished ones waiting to be handed over (READY).

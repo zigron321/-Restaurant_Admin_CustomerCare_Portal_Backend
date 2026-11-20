@@ -11,7 +11,7 @@ from apps.delivery.serializers import DeliverySerializer, AssignDriverSerializer
 from apps.orders.models import Order
 from apps.restaurants.models import Restaurant, RestaurantStaffMember
 from apps.common.permissions import IsRestaurantOwner, IsDeliveryStaff
-from apps.common.active_restaurant import my_restaurants, scope_queryset
+from apps.common.active_restaurant import managed_restaurants, my_restaurants, scope_queryset
 
 def ensure_deliveries(restaurant_ids):
     """
@@ -59,10 +59,11 @@ class DeliveryViewSet(viewsets.ModelViewSet):
             jobs = queryset.filter(Q(driver__user=user) | Q(driver__isnull=True, restaurant_id__in=restaurant_ids, status='PENDING'))
             # Only the restaurant picked in the switcher (all of the driver's restaurants if none is picked).
             return scope_queryset(jobs, self.request)
-        elif user.role == 'RESTAURANT_OWNER':
-            # Owners see deliveries for their restaurant
-            ensure_deliveries(list(Restaurant.objects.filter(owner=user).values_list('id', flat=True)))
-            return scope_queryset(queryset.filter(restaurant__owner=user), self.request)
+        elif user.role in ('RESTAURANT_OWNER', 'RESTAURANT_MANAGER'):
+            # Owners (and the managers they appointed) see deliveries for their restaurants
+            mine = managed_restaurants(user)
+            ensure_deliveries(list(mine.values_list('id', flat=True)))
+            return scope_queryset(queryset.filter(restaurant__in=mine), self.request)
         elif user.role == 'RESTAURANT_STAFF':
             return scope_queryset(queryset.filter(restaurant__in=my_restaurants(user)), self.request)
         elif user.role == 'SUPER_ADMIN':

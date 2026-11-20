@@ -5,7 +5,7 @@ from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
 
 from apps.support.models import SupportTicket, SupportTicketMessage
-from apps.common.active_restaurant import scope_queryset
+from apps.common.active_restaurant import managed_restaurants, scope_queryset
 from apps.support.serializers import SupportTicketSerializer, SupportTicketMessageSerializer
 
 class SupportTicketViewSet(viewsets.ModelViewSet):
@@ -18,9 +18,9 @@ class SupportTicketViewSet(viewsets.ModelViewSet):
         if user.role == 'CUSTOMER':
             # Customers only see their own tickets
             return SupportTicket.objects.filter(customer=user).prefetch_related('messages').order_by('-created_at')
-        elif user.role == 'RESTAURANT_OWNER':
-            # Owners see tickets related to their restaurant
-            return scope_queryset(SupportTicket.objects.filter(restaurant__owner=user), self.request).prefetch_related('messages').order_by('-created_at')
+        elif user.role in ('RESTAURANT_OWNER', 'RESTAURANT_MANAGER'):
+            # Owners (and their managers) see tickets related to their restaurants
+            return scope_queryset(SupportTicket.objects.filter(restaurant__in=managed_restaurants(user)), self.request).prefetch_related('messages').order_by('-created_at')
         elif user.role == 'SUPER_ADMIN':
             return scope_queryset(SupportTicket.objects.all(), self.request).prefetch_related('messages').order_by('-created_at')
         return SupportTicket.objects.none()
@@ -35,7 +35,7 @@ class SupportTicketViewSet(viewsets.ModelViewSet):
         ticket = self.get_object()
         
         # Security: Ensure only the ticket owner or staff can message
-        if request.user != ticket.customer and request.user.role not in ['RESTAURANT_OWNER', 'SUPER_ADMIN', 'RESTAURANT_STAFF']:
+        if request.user != ticket.customer and request.user.role not in ['RESTAURANT_OWNER', 'RESTAURANT_MANAGER', 'SUPER_ADMIN', 'RESTAURANT_STAFF']:
             return Response({"error": "Not authorized to message this ticket"}, status=status.HTTP_403_FORBIDDEN)
 
         serializer = SupportTicketMessageSerializer(data=request.data)

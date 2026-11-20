@@ -8,6 +8,7 @@ Centralized choices for the Restaurant Portal project.
 USER_ROLES = (
     ('CUSTOMER', 'Customer'),
     ('RESTAURANT_OWNER', 'Restaurant Owner'),
+    ('RESTAURANT_MANAGER', 'Restaurant Manager'),
     ('RESTAURANT_STAFF', 'Restaurant Staff'),
     ('DELIVERY_STAFF', 'Delivery Staff'),
     ('SUPER_ADMIN', 'Super Admin'),

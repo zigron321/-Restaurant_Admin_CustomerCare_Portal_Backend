@@ -15,7 +15,7 @@ from apps.menu.serializers import (
 )
 from apps.restaurants.models import Restaurant
 from apps.common.permissions import CanManageRestaurant, IsRestaurantOwner
-from apps.common.active_restaurant import active_restaurant, scope_queryset
+from apps.common.active_restaurant import OWNER_SIDE_ROLES, active_restaurant, managed_restaurants, manages, scope_queryset
 
 class MenuCategoryViewSet(viewsets.ModelViewSet):
     """Menu category CRUD endpoints"""
@@ -41,9 +41,9 @@ class MenuCategoryViewSet(viewsets.ModelViewSet):
         # Only filter for list action so permission classes can evaluate 403 for individual items
         if self.action == 'list':
             queryset = MenuCategory.objects.filter(is_active=True)
-            if self.request.user.is_authenticated and self.request.user.role == 'RESTAURANT_OWNER':
-                # Only the restaurant picked in the switcher (all of the owner's restaurants if none is picked).
-                queryset = scope_queryset(MenuCategory.objects.filter(restaurant__owner=self.request.user), self.request)
+            if self.request.user.is_authenticated and self.request.user.role in OWNER_SIDE_ROLES:
+                # Only the restaurant picked in the switcher (all of the owner's / manager's restaurants if none is picked).
+                queryset = scope_queryset(MenuCategory.objects.filter(restaurant__in=managed_restaurants(self.request.user)), self.request)
             
             restaurant_id = self.request.query_params.get('restaurant_id')
             if restaurant_id:
@@ -56,7 +56,7 @@ class MenuCategoryViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         restaurant_id = self.request.data.get('restaurant_id')
         if restaurant_id:
-            restaurant = get_object_or_404(Restaurant, id=restaurant_id, owner=self.request.user)
+            restaurant = get_object_or_404(managed_restaurants(self.request.user), id=restaurant_id)
         else:
             # No restaurant named in the form: use the one the owner is working on.
             restaurant = active_restaurant(self.request)
@@ -88,8 +88,8 @@ class MenuItemViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         if self.action == 'list':
             queryset = MenuItem.objects.filter(is_available=True, restaurant__is_active=True)
-            if self.request.user.is_authenticated and self.request.user.role == 'RESTAURANT_OWNER':
-                queryset = scope_queryset(MenuItem.objects.filter(restaurant__owner=self.request.user), self.request)
+            if self.request.user.is_authenticated and self.request.user.role in OWNER_SIDE_ROLES:
+                queryset = scope_queryset(MenuItem.objects.filter(restaurant__in=managed_restaurants(self.request.user)), self.request)
             
             restaurant_id = self.request.query_params.get('restaurant_id')
             if restaurant_id:
@@ -101,7 +101,7 @@ class MenuItemViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         category_id = self.request.data.get('category_id')
         category = get_object_or_404(MenuCategory, id=category_id)
-        if category.restaurant.owner != self.request.user:
+        if not manages(self.request.user, category.restaurant_id):
             from rest_framework.exceptions import PermissionDenied
             raise PermissionDenied("You do not own this category.")
         serializer.save(restaurant=category.restaurant, category=category)
@@ -136,15 +136,15 @@ class MenuItemCustomizationViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         if self.action == 'list':
             user = self.request.user
-            if user.is_authenticated and user.role == 'RESTAURANT_OWNER':
-                return scope_queryset(MenuItemCustomization.objects.filter(menu_item__restaurant__owner=user), self.request, 'menu_item__restaurant')
+            if user.is_authenticated and user.role in OWNER_SIDE_ROLES:
+                return scope_queryset(MenuItemCustomization.objects.filter(menu_item__restaurant__in=managed_restaurants(user)), self.request, 'menu_item__restaurant')
             return MenuItemCustomization.objects.filter(menu_item__is_available=True)
         return MenuItemCustomization.objects.all()
 
     def perform_create(self, serializer):
         menu_item_id = self.request.data.get('menu_item_id')
         menu_item = get_object_or_404(MenuItem, id=menu_item_id)
-        if menu_item.restaurant.owner != self.request.user:
+        if not manages(self.request.user, menu_item.restaurant_id):
             from rest_framework.exceptions import PermissionDenied
             raise PermissionDenied("You do not own this menu item.")
         serializer.save(menu_item=menu_item)
@@ -163,15 +163,15 @@ class MenuItemAddOnViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         if self.action == 'list':
             user = self.request.user
-            if user.is_authenticated and user.role == 'RESTAURANT_OWNER':
-                return scope_queryset(MenuItemAddOn.objects.filter(menu_item__restaurant__owner=user), self.request, 'menu_item__restaurant')
+            if user.is_authenticated and user.role in OWNER_SIDE_ROLES:
+                return scope_queryset(MenuItemAddOn.objects.filter(menu_item__restaurant__in=managed_restaurants(user)), self.request, 'menu_item__restaurant')
             return MenuItemAddOn.objects.filter(menu_item__is_available=True)
         return MenuItemAddOn.objects.all()
 
     def perform_create(self, serializer):
         menu_item_id = self.request.data.get('menu_item_id')
         menu_item = get_object_or_404(MenuItem, id=menu_item_id)
-        if menu_item.restaurant.owner != self.request.user:
+        if not manages(self.request.user, menu_item.restaurant_id):
             from rest_framework.exceptions import PermissionDenied
             raise PermissionDenied("You do not own this menu item.")
         serializer.save(menu_item=menu_item)

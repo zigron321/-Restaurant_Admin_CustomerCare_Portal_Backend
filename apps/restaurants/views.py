@@ -11,13 +11,13 @@ from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.views import APIView
 
-from apps.common.permissions import CanManageRestaurant, IsRestaurantOwner
+from apps.common.permissions import CanManageRestaurant, IsRestaurantOwner, IsOnlyRestaurantOwner
 from apps.restaurants.models import Restaurant, RestaurantHoliday, RestaurantDeliveryZone, RestaurantStaffMember, RestaurantTable, Reservation
 from apps.restaurants.serializers import RestaurantDetailSerializer, RestaurantListSerializer, RestaurantDeliveryZoneSerializer, RestaurantSettingsSerializer, RestaurantHolidaySerializer, StaffMemberSerializer,     RestaurantTableSerializer, ReservationSerializer, AvailableSlotsSerializer, AvailableTableSerializer
 
 from apps.menu.models import MenuCategory
 from apps.menu.serializers import MenuCategoryDetailSerializer
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import ValidationError, PermissionDenied
 from apps.users.models import User
 
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -27,15 +27,20 @@ from django.db import transaction
 from datetime import timedelta
 
 from apps.restaurants import reservation_services
-from apps.common.active_restaurant import active_restaurant, my_restaurants, scope_queryset
+from apps.common.active_restaurant import active_restaurant, managed_restaurants, manages, my_restaurants, scope_queryset
 
 
-# Team role -> account role. Only DELIVERY_STAFF opens the driver screen; every other team
-# role (kitchen, manager, cashier, ...) uses the restaurant-staff account type.
-STAFF_SWITCHABLE_ROLES = ('CUSTOMER', 'RESTAURANT_STAFF', 'DELIVERY_STAFF')
+# Team role -> account role. MANAGER opens the manager's restaurant console (the owner screens for one restaurant),
+# DELIVERY_STAFF opens the driver screen; every other team role (kitchen, cashier, ...) uses the restaurant-staff account type.
+STAFF_SWITCHABLE_ROLES = ('CUSTOMER', 'RESTAURANT_STAFF', 'RESTAURANT_MANAGER', 'DELIVERY_STAFF')
+
+# A manager may only add / change / remove these team roles.
+MANAGER_CAN_HANDLE = ('KITCHEN_STAFF', 'DELIVERY_STAFF')
 
 
 def login_role_for(team_role):
+    if team_role == 'MANAGER':
+        return 'RESTAURANT_MANAGER'
     return 'DELIVERY_STAFF' if team_role == 'DELIVERY_STAFF' else 'RESTAURANT_STAFF'
 
 
@@ -54,8 +59,11 @@ class RestaurantViewSet(viewsets.ModelViewSet):
 
     def get_permissions(self):
         if self.action in ['create']:
-            permission_classes = [IsRestaurantOwner]
-        elif self.action in ['update', 'partial_update', 'destroy']:
+            # Only owners add restaurants; a manager works inside the one(s) the owner assigned.
+            permission_classes = [IsOnlyRestaurantOwner]
+        elif self.action in ['destroy']:
+            permission_classes = [IsOnlyRestaurantOwner, CanManageRestaurant]
+        elif self.action in ['update', 'partial_update']:
             permission_classes = [CanManageRestaurant]
         else:
             permission_classes = [IsAuthenticatedOrReadOnly]
@@ -98,7 +106,7 @@ class RestaurantViewSet(viewsets.ModelViewSet):
         user = request.user
         rows = my_restaurants(user).order_by('created_at')
         team_roles = {}
-        if user.role in ('RESTAURANT_STAFF', 'DELIVERY_STAFF'):
+        if user.role in ('RESTAURANT_STAFF', 'RESTAURANT_MANAGER', 'DELIVERY_STAFF'):
             team_roles = {
                 str(m.restaurant_id): m.role
                 for m in RestaurantStaffMember.objects.filter(user=user, is_active=True)
@@ -189,7 +197,7 @@ class RestaurantHolidayViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, IsRestaurantOwner]
 
     def get_queryset(self):
-        return scope_queryset(RestaurantHoliday.objects.filter(restaurant__owner=self.request.user), self.request)
+        return scope_queryset(RestaurantHoliday.objects.filter(restaurant__in=managed_restaurants(self.request.user)), self.request)
 
     def perform_create(self, serializer):
         restaurant = active_restaurant(self.request)
@@ -201,7 +209,7 @@ class RestaurantDeliveryZoneViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, IsRestaurantOwner]
 
     def get_queryset(self):
-        return scope_queryset(RestaurantDeliveryZone.objects.filter(restaurant__owner=self.request.user), self.request)
+        return scope_queryset(RestaurantDeliveryZone.objects.filter(restaurant__in=managed_restaurants(self.request.user)), self.request)
 
     def perform_create(self, serializer):
         restaurant = active_restaurant(self.request)
@@ -215,7 +223,16 @@ class StaffMemberViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, IsRestaurantOwner]
 
     def get_queryset(self):
-        return scope_queryset(RestaurantStaffMember.objects.filter(restaurant__owner=self.request.user), self.request)
+        return scope_queryset(RestaurantStaffMember.objects.filter(restaurant__in=managed_restaurants(self.request.user)), self.request)
+
+    # ---------- what a manager may do with the team ----------
+    def _is_appointed_manager(self):
+        return self.request.user.role == 'RESTAURANT_MANAGER'
+
+    def _manager_check(self, role):
+        """A manager may only handle kitchen and delivery staff. Owners may handle anyone."""
+        if self._is_appointed_manager() and role not in MANAGER_CAN_HANDLE:
+            raise PermissionDenied('Managers can only add, change or remove kitchen staff and delivery staff.')
 
     def perform_create(self, serializer):
         restaurant = active_restaurant(self.request)
@@ -223,6 +240,8 @@ class StaffMemberViewSet(viewsets.ModelViewSet):
         
         if not staff_email:
             raise ValidationError({"staff_email": "This field is required."})
+
+        self._manager_check(serializer.validated_data.get('role'))
             
         # The role chosen on the team form (KITCHEN_STAFF, DELIVERY_STAFF, ...) decides which
         # screen this person lands on after login, so the account role must match it.
@@ -230,6 +249,8 @@ class StaffMemberViewSet(viewsets.ModelViewSet):
 
         # One account has one kind of job: it can be kitchen at several restaurants, but not kitchen at one and driver at another.
         existing = User.objects.filter(email=staff_email).first()
+        if existing is not None and self._is_appointed_manager() and existing.role in ('RESTAURANT_OWNER', 'RESTAURANT_MANAGER', 'SUPER_ADMIN'):
+            raise ValidationError({'staff_email': 'That email belongs to an account that cannot be added as kitchen or delivery staff.'})
         if existing is not None:
             kinds = {login_role_for(m.role) for m in RestaurantStaffMember.objects.filter(user=existing)}
             if kinds and login_role not in kinds:
@@ -264,6 +285,8 @@ class StaffMemberViewSet(viewsets.ModelViewSet):
         serializer.save(restaurant=restaurant, user=user)
 
     def perform_update(self, serializer):
+        self._manager_check(serializer.instance.role)
+        self._manager_check(serializer.validated_data.get('role', serializer.instance.role))
         new_role = serializer.validated_data.get('role')
         if new_role:
             kinds = {
@@ -283,10 +306,15 @@ class StaffMemberViewSet(viewsets.ModelViewSet):
             user.role = login_role
             user.save(update_fields=['role'])
 
+    def perform_destroy(self, instance):
+        self._manager_check(instance.role)
+        instance.delete()
+
     @action(detail=True, methods=['post'], url_path='toggle-active')
     def toggle_active(self, request, pk=None):
         """POST /api/v1/restaurants/staff/{id}/toggle-active/"""
         staff_member = self.get_object()
+        self._manager_check(staff_member.role)
         staff_member.is_active = not staff_member.is_active
         staff_member.save()
         
@@ -296,7 +324,8 @@ class StaffMemberViewSet(viewsets.ModelViewSet):
     def update_permissions(self, request, pk=None):
         """POST /api/v1/restaurants/staff/{id}/update-permissions/"""
         staff_member = self.get_object()
-        
+        self._manager_check(staff_member.role)
+
         permissions = ['can_manage_menu', 'can_manage_orders', 'can_manage_staff', 'can_manage_payments', 'can_view_analytics']
         for perm in permissions:
             if perm in request.data:
@@ -313,7 +342,7 @@ class RestaurantTableViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, IsRestaurantOwner]
 
     def get_queryset(self):
-        return scope_queryset(RestaurantTable.objects.filter(restaurant__owner=self.request.user), self.request).order_by('table_number')
+        return scope_queryset(RestaurantTable.objects.filter(restaurant__in=managed_restaurants(self.request.user)), self.request).order_by('table_number')
 
     def _my_restaurant(self):
         # The restaurant the owner is working on (switcher), or the oldest one.
@@ -354,8 +383,8 @@ class ReservationViewSet(viewsets.ModelViewSet):
         user = self.request.user
         if user.role == 'CUSTOMER':
             qs = Reservation.objects.filter(customer=user)
-        elif user.role == 'RESTAURANT_OWNER':
-            qs = scope_queryset(Reservation.objects.filter(restaurant__owner=user), self.request)
+        elif user.role in ('RESTAURANT_OWNER', 'RESTAURANT_MANAGER'):
+            qs = scope_queryset(Reservation.objects.filter(restaurant__in=managed_restaurants(user)), self.request)
         elif user.role == 'SUPER_ADMIN':
             qs = scope_queryset(Reservation.objects.all(), self.request)
         else:
@@ -380,7 +409,7 @@ class ReservationViewSet(viewsets.ModelViewSet):
     # ---------- helpers ----------
     @staticmethod
     def _is_manager(user, reservation):
-        return user.role == 'SUPER_ADMIN' or (user.role == 'RESTAURANT_OWNER' and reservation.restaurant.owner_id == user.id)
+        return user.role == 'SUPER_ADMIN' or (user.role in ('RESTAURANT_OWNER', 'RESTAURANT_MANAGER') and manages(user, reservation.restaurant_id))
 
     @staticmethod
     def _bad(message, code=status.HTTP_400_BAD_REQUEST):
